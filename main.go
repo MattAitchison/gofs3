@@ -6,31 +6,37 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"gopkg.in/fsnotify.v1"
 )
 
+var src, dst string
+
 func main() {
 	if len(os.Args) != 3 {
 		log.Fatal("wrong number of arguments")
 	}
-	src, _ := os.Args[1], os.Args[2]
+	src, dst = os.Args[1], os.Args[2]
 
-	creds := credentials.NewEnvCredentials()
-	if _, err := creds.Get(); err != nil {
-		log.Fatal(err)
-	}
-
+	// creds := credentials.NewEnvCredentials()
+	// if _, err := creds.Get(); err != nil {
+	// 	log.Fatal(err)
+	// }
+	//
+	// svc := s3.New(&aws.Config{
+	// 	Credentials:      creds,
+	// 	Region:           "us-east-2",
+	// 	Endpoint:         "s3.amazonaws.com",
+	// 	S3ForcePathStyle: true,
+	// })
 	svc := s3.New(&aws.Config{
-		Credentials:      creds,
-		Region:           "us-east-2",
-		Endpoint:         "s3.amazonaws.com",
-		S3ForcePathStyle: true,
+		Endpoint: "s3.amazonaws.com",
+		// S3ForcePathStyle: true,
 	})
 
 	uploader := s3manager.NewUploader(&s3manager.UploadOptions{S3: svc})
+	// uploader := s3manager.NewUploader(nil)
 
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -87,9 +93,9 @@ func handleCreate(watcher *fsnotify.Watcher, u *s3manager.Uploader, path string)
 
 	name := fi.Name()
 	_, err = u.Upload(&s3manager.UploadInput{
-		Bucket: &os.Args[2],
+		Bucket: aws.String(dst),
 		Body:   r,
-		Key:    &name,
+		Key:    aws.String(name),
 	})
 	if err != nil {
 		log.Fatal(err)
