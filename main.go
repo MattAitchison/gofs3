@@ -3,87 +3,83 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
-	"gopkg.in/fsnotify.v1"
+	"github.com/rjeczalik/notify"
 )
 
 var src, dst string
 
 func main() {
+	done := make(chan bool)
 	if len(os.Args) != 3 {
-		log.Fatal("wrong number of arguments")
+		log.Fatal("src and dst required. gofs3 <src> <dst>")
 	}
 	src, dst = os.Args[1], os.Args[2]
+	var err error
+	src, err = filepath.Abs(src)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	// creds := credentials.NewEnvCredentials()
-	// if _, err := creds.Get(); err != nil {
-	// 	log.Fatal(err)
-	// }
-	//
-	// svc := s3.New(&aws.Config{
-	// 	Credentials:      creds,
-	// 	Region:           "us-east-2",
-	// 	Endpoint:         "s3.amazonaws.com",
-	// 	S3ForcePathStyle: true,
-	// })
 	svc := s3.New(&aws.Config{
 		Endpoint: "s3.amazonaws.com",
-		// S3ForcePathStyle: true,
 	})
 
 	uploader := s3manager.NewUploader(&s3manager.UploadOptions{S3: svc})
-	// uploader := s3manager.NewUploader(nil)
 
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
+	// Make the channel buffered to ensure no event is dropped. Notify will drop
+	// an event if the receiver is not able to keep up the sending pace.
+	c := make(chan notify.EventInfo, 1)
+
+	// Set up a watchpoint listening on events within current working directory.
+	// Dispatch each create and remove events separately to c.
+	if err := notify.Watch(filepath.Join(src, "..."), c, notify.Create, notify.Remove, notify.Write); err != nil {
 		log.Fatal(err)
 	}
-	defer watcher.Close()
+	defer notify.Stop(c)
+	log.Println("watching...")
 
-	done := make(chan bool)
-	go func() {
-		for {
-			select {
-			case event := <-watcher.Events:
-				log.Println("event:", event)
-				switch event.Op {
-				case fsnotify.Create:
-					handleCreate(watcher, uploader, event.Name)
-				case fsnotify.Write:
-					log.Println("modified file:", event.Name)
-				}
-
-			case err := <-watcher.Errors:
-				log.Println("error:", err)
-			}
+	// Block until an event is received.
+	for e := range c {
+		log.Println(e)
+		switch e.Event() {
+		case notify.Create:
+			// handleCreate(uploader, e.Path())
+		case notify.Write:
+			handleCreate(uploader, e.Path())
+		case notify.Remove:
+			handleRemove(svc, dst, e.Path())
 		}
-	}()
-
-	err = filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if info.IsDir() {
-			log.Println(path)
-			return watcher.Add(path)
-		}
-		return nil
-	})
-	if err != nil {
-		log.Fatal(err)
 	}
+	// ei := <-c
 
 	<-done
 
 }
 
-func handleCreate(watcher *fsnotify.Watcher, u *s3manager.Uploader, path string) error {
-	fi, _ := os.Lstat(path)
+// type S3Sync struct {
+// 	Bucket string
+// 	*s3.S3
+// }
 
-	if fi.IsDir() {
-		return watcher.Add(path)
+func handleRemove(svc *s3.S3, bucket, path string) error {
+	key := strings.TrimPrefix(path, src)
+	res, err := svc.DeleteObject(&s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: aws.String(key)})
+
+	if err != nil {
+		log.Fatal(err)
 	}
+
+	log.Println(res)
+	return nil
+}
+
+func handleCreate(u *s3manager.Uploader, path string) error {
 
 	r, err := os.Open(path)
 	if err != nil {
@@ -91,14 +87,16 @@ func handleCreate(watcher *fsnotify.Watcher, u *s3manager.Uploader, path string)
 		return err
 	}
 
-	name := fi.Name()
-	_, err = u.Upload(&s3manager.UploadInput{
+	key := strings.TrimPrefix(path, src)
+	res, err := u.Upload(&s3manager.UploadInput{
 		Bucket: aws.String(dst),
 		Body:   r,
-		Key:    aws.String(name),
+		Key:    aws.String(key),
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	log.Println(res)
 	return nil
 }
